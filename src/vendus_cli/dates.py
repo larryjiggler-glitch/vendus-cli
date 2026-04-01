@@ -79,3 +79,17 @@ def _resolve_alias(alias: str, today: date) -> tuple[date, date]:
         f"Use: today, yesterday, Nd (e.g. 7d), this-week, last-week, "
         f"this-month, last-month, or YYYY-MM-DD."
     )
+
+
+def bucket_by_interval(date_str: str, interval: str) -> str:
+    """Assign a date string to a time bucket.
+
+    Returns: '2026-01' for month, '2026-W13' for week, '2026-03-31' for day.
+    """
+    d = date.fromisoformat(date_str)
+    if interval == "month":
+        return d.strftime("%Y-%m")
+    if interval == "week":
+        iso = d.isocalendar()
+        return f"{iso[0]}-W{iso[1]:02d}"
+    return date_str

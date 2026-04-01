@@ -21,6 +21,7 @@ from vendus_cli.commands import (
     inspect_cmd,
     meta,
     payments,
+    query,
     receipts,
     sales,
     sync,
@@ -81,6 +82,7 @@ def main() -> None:
     catalog.register(subparsers)
     payments.register(subparsers)
     meta.register(subparsers)
+    query.register(subparsers)
     sync.register(subparsers)
     inspect_cmd.register(subparsers)
 

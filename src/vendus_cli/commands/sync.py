@@ -7,7 +7,7 @@ from typing import Any
 
 import requests
 
-from vendus_cli.api import fetch_documents
+from vendus_cli.api import fetch_all, fetch_categories, fetch_documents
 from vendus_cli.dates import resolve_since_until
 
 
@@ -30,6 +30,18 @@ def cmd_sync_sales(
     since, until = resolve_since_until(args.since, args.until)
     docs = fetch_documents(session, since, until, detailed=True)
 
+    # Include product + category maps for offline queries
+    products = fetch_all(session, "products", per_page=500)
+    product_map = {
+        str(p["id"]): {
+            "title": p.get("title", ""),
+            "category_id": p.get("category_id", 0),
+        }
+        for p in products
+    }
+    cats = fetch_categories(session)
+    category_map = {str(c["id"]): c["title"] for c in cats}
+
     output = {
         "metadata": {
             "start_date": since,
@@ -37,6 +49,8 @@ def cmd_sync_sales(
             "total_count": len(docs),
             "extracted_at": datetime.now(timezone.utc).isoformat(),
         },
+        "products": product_map,
+        "categories": category_map,
         "transactions": docs,
     }
 
