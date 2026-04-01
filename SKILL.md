@@ -42,7 +42,7 @@ All commands accept `--format json|table|md` (default: json). Flag works in any 
 
 ```bash
 vendus-pos sales summary --since today
-vendus-pos sales by-hour --date yesterday
+vendus-pos sales by-hour --since yesterday
 vendus-pos sales by-product --since 7d --top 5
 vendus-pos sales by-product --since 7d --product "egg"
 vendus-pos sales by-category --since this-month
@@ -84,10 +84,24 @@ vendus-pos stores list
 vendus-pos registers list
 ```
 
-### Sync & Inspect
+### Sync & Query (offline — for trends and large date ranges)
 
 ```bash
-vendus-pos sync sales --since yesterday --output sales.json
+# Step 1: Sync data locally (one-time, ~3min for 3 months)
+vendus-pos sync sales --since 2026-01-01 --until today --output sales.json
+
+# Step 2: Query instantly from the local file (no API calls)
+vendus-pos query summary --file sales.json --interval month
+vendus-pos query by-category --file sales.json --category Beans --interval month
+vendus-pos query by-product --file sales.json --product "Cappuccino" --interval week
+vendus-pos query by-product --file sales.json --top 5 --interval month
+```
+
+**IMPORTANT:** For any query spanning >1 month with category/product filters, always use sync→query instead of the live `sales by-category` command. The live command fetches every document individually (~60s per month). The query command reads a local file (~0.15s).
+
+### Inspect
+
+```bash
 vendus-pos inspect auth
 vendus-pos inspect rate-limit
 ```
@@ -115,7 +129,7 @@ vendus-pos sales by-product --since this-week --top 3
 ### "Hourly breakdown today?"
 
 ```bash
-vendus-pos --format table sales by-hour --date today
+vendus-pos --format table sales by-hour --since today
 ```
 
 ### "Payment split this week?"
@@ -130,6 +144,21 @@ vendus-pos --format table payments mix --since this-week
 vendus-pos sales stats --since this-week
 ```
 
+### "Show me beans sales trend this year" (or any category/product trend)
+
+Use sync→query (NOT the live `sales by-category` which is too slow for multi-month):
+
+```bash
+vendus-pos sync sales --since 2026-01-01 --until today --output /tmp/vendus-sales.json
+vendus-pos --format table query by-category --file /tmp/vendus-sales.json --category Beans --interval month
+```
+
+For product trends:
+
+```bash
+vendus-pos query by-product --file /tmp/vendus-sales.json --product "Cappuccino" --interval month
+```
+
 ## Response Style
 
 Always convert output into a clear conversational answer with actual numbers. Never dump raw JSON to the user.
@@ -138,6 +167,7 @@ Always convert output into a clear conversational answer with actual numbers. Ne
 
 - Sales queries filter to `FT`/`FS`/`FR` documents only (excludes receipts, credit notes).
 - `status=N` excludes cancelled documents.
-- Line-item queries (by-product, by-category, stats, payments) fetch each document individually.
+- Line-item queries (by-product, by-category, stats, payments) fetch each document individually — ~60s per month.
+- For queries spanning >1 month with filters, use `sync` + `query` instead (sync once, query instant).
 - All monetary values are EUR.
 - Auth: API key as query parameter.
