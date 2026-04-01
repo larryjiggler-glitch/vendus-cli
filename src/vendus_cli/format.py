@@ -22,10 +22,13 @@ def _extract_rows(data: Any) -> tuple[list[dict[str, Any]], list[str]]:
     if isinstance(data, list) and not data:
         return [], []
 
-    # List of dicts → direct table
+    # List of dicts → direct table (derive columns from all rows)
     if isinstance(data, list) and data and isinstance(data[0], dict):
-        columns = list(data[0].keys())
-        return data, columns
+        seen: dict[str, None] = {}
+        for row in data:
+            for k in row:
+                seen.setdefault(k, None)
+        return data, list(seen)
 
     # Dict with a single list-valued key → extract the list
     if isinstance(data, dict):
@@ -33,8 +36,11 @@ def _extract_rows(data: Any) -> tuple[list[dict[str, Any]], list[str]]:
         if len(list_keys) == 1:
             rows = data[list_keys[0]]
             if rows and isinstance(rows[0], dict):
-                columns = list(rows[0].keys())
-                return rows, columns
+                seen_cols: dict[str, None] = {}
+                for row in rows:
+                    for k in row:
+                        seen_cols.setdefault(k, None)
+                return rows, list(seen_cols)
 
         # Flat dict → key/value table
         rows = [{"field": k, "value": v} for k, v in data.items()

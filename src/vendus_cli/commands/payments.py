@@ -28,59 +28,27 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     p.set_defaults(func=cmd_mix)
 
 
-def _aggregate_payments(
-    docs: list[dict[str, Any]],
-) -> dict[str, float]:
-    """Aggregate payment amounts by method title."""
+def _payment_breakdown(
+    args: argparse.Namespace,
+    session: requests.Session,
+    include_pct: bool = False,
+) -> dict[str, Any]:
+    """Shared logic for summary and mix commands."""
+    since, until = resolve_since_until(args.since, args.until)
+    docs = fetch_documents(session, since, until, detailed=True, store_id=args.store)
+
     by_method: dict[str, float] = defaultdict(float)
     for d in docs:
-        payments = d.get("payments") or []
-        for p in payments:
-            title = p.get("title", "Unknown")
-            amount = safe_float(p.get("amount", 0))
-            by_method[title] += amount
-    return dict(by_method)
+        for p in d.get("payments") or []:
+            by_method[p.get("title", "Unknown")] += safe_float(p.get("amount", 0))
 
-
-def cmd_summary(
-    args: argparse.Namespace,
-    session: requests.Session,
-) -> dict[str, Any]:
-    since, until = resolve_since_until(args.since, args.until)
-    # Payments are in the detailed view (list endpoint with view=detailed includes them)
-    docs = fetch_documents(session, since, until, detailed=True, store_id=args.store)
-
-    by_method = _aggregate_payments(docs)
     total = sum(by_method.values())
-
-    methods = sorted(
-        [{"method": k, "total": round(v, 2)} for k, v in by_method.items()],
-        key=lambda x: -x["total"],
-    )
-
-    return {
-        "period": {"since": since, "until": until},
-        "total": round(total, 2),
-        "methods": methods,
-    }
-
-
-def cmd_mix(
-    args: argparse.Namespace,
-    session: requests.Session,
-) -> dict[str, Any]:
-    since, until = resolve_since_until(args.since, args.until)
-    docs = fetch_documents(session, since, until, detailed=True, store_id=args.store)
-
-    by_method = _aggregate_payments(docs)
-    total = sum(by_method.values())
-
     methods = sorted(
         [
             {
                 "method": k,
                 "total": round(v, 2),
-                "pct": round((v / total) * 100, 1) if total else 0,
+                **({"pct": round((v / total) * 100, 1) if total else 0} if include_pct else {}),
             }
             for k, v in by_method.items()
         ],
@@ -92,3 +60,17 @@ def cmd_mix(
         "total": round(total, 2),
         "methods": methods,
     }
+
+
+def cmd_summary(
+    args: argparse.Namespace,
+    session: requests.Session,
+) -> dict[str, Any]:
+    return _payment_breakdown(args, session, include_pct=False)
+
+
+def cmd_mix(
+    args: argparse.Namespace,
+    session: requests.Session,
+) -> dict[str, Any]:
+    return _payment_breakdown(args, session, include_pct=True)

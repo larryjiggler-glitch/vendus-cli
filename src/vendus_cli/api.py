@@ -25,7 +25,10 @@ log = logging.getLogger("pos")
 
 
 def _load_secrets_file() -> dict[str, str]:
-    """Parse KEY=VALUE lines from first .env or .secrets file found.
+    """Parse KEY=VALUE lines from .env / .secrets files.
+
+    Searches all candidates and merges results. Earlier files take precedence
+    (values already set are not overwritten by later files).
 
     Handles both ``KEY=value`` and ``export KEY=value`` formats.
     """
@@ -38,17 +41,17 @@ def _load_secrets_file() -> dict[str, str]:
     ]
     for p in candidates:
         if p.is_file():
-            for line in p.read_text().splitlines():
-                line = line.strip()
-                if not line or line.startswith("#"):
+            for raw_line in p.read_text().splitlines():
+                raw_line = raw_line.strip()
+                if not raw_line or raw_line.startswith("#"):
                     continue
-                if "=" in line:
-                    key, _, value = line.partition("=")
+                if "=" in raw_line:
+                    key, _, value = raw_line.partition("=")
                     key = key.strip()
                     if key.startswith("export "):
                         key = key[7:].strip()
-                    secrets[key] = value.strip().strip("'\"")
-            break
+                    if key not in secrets:
+                        secrets[key] = value.strip().strip("'\"")
     return secrets
 
 
@@ -258,20 +261,15 @@ def _fetch_documents_parallel(
     doc_ids: list[int],
     max_workers: int = 10,
 ) -> list[dict[str, Any]]:
-    """Fetch multiple documents in parallel using a thread pool."""
-    from concurrent.futures import ThreadPoolExecutor, as_completed
+    """Fetch multiple documents in parallel, preserving input order."""
+    from concurrent.futures import ThreadPoolExecutor
 
-    results: list[dict[str, Any]] = []
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        futures = {
-            pool.submit(fetch_document_detail, session, doc_id): doc_id
-            for doc_id in doc_ids
-        }
-        for future in as_completed(futures):
-            detail = future.result()
-            if detail:
-                results.append(detail)
-    return results
+        details = list(pool.map(
+            lambda doc_id: fetch_document_detail(session, doc_id),
+            doc_ids,
+        ))
+    return [d for d in details if d is not None]
 
 
 def fetch_stores(session: requests.Session) -> list[dict[str, Any]]:
@@ -303,14 +301,17 @@ def fetch_clients(
 def fetch_rate_limit(session: requests.Session) -> dict[str, Any]:
     """Check current rate limit status via a lightweight request."""
     url = f"{BASE_URL}/products/categories/"
-    resp = session.get(url, params={"per_page": 1, "page": 1}, timeout=30)
-    return {
-        "status_code": resp.status_code,
-        "rate_limit_limit": resp.headers.get("Rate-Limit-Limit", "unknown"),
-        "rate_limit_remaining": resp.headers.get("Rate-Limit-Remaining", "unknown"),
-        "rate_limit_used": resp.headers.get("Rate-Limit-Used", "unknown"),
-        "rate_limit_reset": resp.headers.get("Rate-Limit-Reset", "unknown"),
-    }
+    try:
+        resp = session.get(url, params={"per_page": 1, "page": 1}, timeout=30)
+        return {
+            "status_code": resp.status_code,
+            "rate_limit_limit": resp.headers.get("Rate-Limit-Limit", "unknown"),
+            "rate_limit_remaining": resp.headers.get("Rate-Limit-Remaining", "unknown"),
+            "rate_limit_used": resp.headers.get("Rate-Limit-Used", "unknown"),
+            "rate_limit_reset": resp.headers.get("Rate-Limit-Reset", "unknown"),
+        }
+    except requests.RequestException as exc:
+        return {"status_code": 0, "error": str(exc)}
 
 
 # ---------------------------------------------------------------------------
@@ -349,9 +350,27 @@ def item_gross(item: dict[str, Any]) -> float:
     return safe_float(item.get("total") or item.get("price", 0))
 
 
+def resolve_category(
+    cats: list[dict[str, Any]],
+    name_or_id: str,
+) -> int | None:
+    """Fuzzy-match a category name or ID against a pre-fetched category list."""
+    try:
+        cid = int(name_or_id)
+        if any(c["id"] == cid for c in cats):
+            return cid
+    except ValueError:
+        pass
+    needle = name_or_id.lower()
+    for c in cats:
+        if needle in c.get("title", "").lower():
+            return c["id"]
+    return None
+
+
 def build_product_category_map(
     session: requests.Session,
 ) -> dict[int, int]:
-    """Build product_id → category_id mapping from the products endpoint."""
+    """Build product_id -> category_id mapping from the products endpoint."""
     products = fetch_all(session, "products", per_page=500)
     return {p["id"]: p.get("category_id", 0) for p in products}

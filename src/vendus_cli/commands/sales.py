@@ -14,6 +14,7 @@ from vendus_cli.api import (
     fetch_documents,
     item_gross,
     line_items,
+    resolve_category,
     safe_float,
 )
 from vendus_cli.dates import resolve_since_until
@@ -22,7 +23,7 @@ from vendus_cli.dates import resolve_since_until
 def _add_date_args(parser: argparse.ArgumentParser) -> None:
     """Add common --since/--until/--store/--register args."""
     parser.add_argument("--since", required=True, help="Start: today, yesterday, 7d, YYYY-MM-DD")
-    parser.add_argument("--until", default=None, help="End: today, YYYY-MM-DD (default: auto)")
+    parser.add_argument("--until", default=None, help="End (default: auto)")
     parser.add_argument("--store", type=int, default=None, help="Filter by store ID")
     parser.add_argument("--register", type=int, default=None, help="Filter by register ID")
 
@@ -41,9 +42,7 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     p.set_defaults(func=cmd_summary)
 
     p = sub.add_parser("by-hour", help="Hourly sales breakdown")
-    p.add_argument("--date", required=True, help="Date: today, yesterday, YYYY-MM-DD")
-    p.add_argument("--store", type=int, default=None)
-    p.add_argument("--register", type=int, default=None)
+    _add_date_args(p)
     p.set_defaults(func=cmd_by_hour)
 
     p = sub.add_parser("by-product", help="Sales by product")
@@ -61,6 +60,7 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     p.add_argument("--a", required=True, dest="period_a", help="Period A (e.g. yesterday)")
     p.add_argument("--b", required=True, dest="period_b", help="Period B (e.g. last-same-weekday)")
     p.add_argument("--store", type=int, default=None)
+    p.add_argument("--register", type=int, default=None)
     p.set_defaults(func=cmd_compare)
 
     p = sub.add_parser("stats", help="ATV and items-per-ticket")
@@ -109,8 +109,10 @@ def cmd_summary(
     session: requests.Session,
 ) -> dict[str, Any]:
     since, until = _resolve_dates(args)
-    docs = fetch_documents(session, since, until, detailed=False,
-                           store_id=args.store, register_id=args.register)
+    docs = fetch_documents(
+        session, since, until, detailed=False,
+        store_id=args.store, register_id=args.register,
+    )
     result = _aggregate_summary(docs)
     result["period"] = {"since": since, "until": until}
     return result
@@ -120,29 +122,31 @@ def cmd_by_hour(
     args: argparse.Namespace,
     session: requests.Session,
 ) -> dict[str, Any]:
-    since, until = resolve_since_until(args.date)
-    docs = fetch_documents(session, since, until, detailed=False,
-                           store_id=args.store, register_id=args.register)
+    since, until = _resolve_dates(args)
+    docs = fetch_documents(
+        session, since, until, detailed=False,
+        store_id=args.store, register_id=args.register,
+    )
 
     by_hour: dict[str, dict[str, Any]] = defaultdict(
         lambda: {"count": 0, "gross": 0.0}
     )
     for d in docs:
-        # local_time format: "2026-03-30 15:54:23"
         lt = d.get("local_time") or d.get("system_time") or ""
         hour = lt[11:13] if len(lt) >= 13 else "??"
         by_hour[hour]["count"] += 1
         by_hour[hour]["gross"] += doc_gross(d)
 
-    hours = []
-    for h in sorted(by_hour.keys()):
-        hours.append({
+    hours = [
+        {
             "hour": f"{h}:00",
             "transactions": by_hour[h]["count"],
             "gross": round(by_hour[h]["gross"], 2),
-        })
+        }
+        for h in sorted(by_hour.keys())
+    ]
 
-    return {"date": since, "hours": hours}
+    return {"period": {"since": since, "until": until}, "hours": hours}
 
 
 def cmd_by_product(
@@ -150,8 +154,10 @@ def cmd_by_product(
     session: requests.Session,
 ) -> dict[str, Any]:
     since, until = _resolve_dates(args)
-    docs = fetch_documents(session, since, until, detailed=True,
-                           store_id=args.store, register_id=args.register)
+    docs = fetch_documents(
+        session, since, until, detailed=True,
+        store_id=args.store, register_id=args.register,
+    )
 
     product_totals: dict[Any, dict[str, Any]] = defaultdict(
         lambda: {"title": "", "reference": "", "qty": 0.0, "gross": 0.0}
@@ -161,13 +167,12 @@ def cmd_by_product(
 
     for d in docs:
         for item in line_items(d):
-            pid = item.get("id") or item.get("product_id") or 0
+            pid = item.get("id") or 0
             title = item.get("title", f"Product {pid}")
             ref = item.get("reference", "")
 
-            if needle:
-                if needle not in title.lower() and needle not in ref.lower():
-                    continue
+            if needle and needle not in title.lower() and needle not in ref.lower():
+                continue
 
             qty = safe_float(item.get("qty", 0))
             gross = item_gross(item)
@@ -209,17 +214,14 @@ def cmd_by_category(
     cats = fetch_categories(session)
     cat_map = {c["id"]: c["title"] for c in cats}
     product_cat_map = build_product_category_map(session)
-    docs = fetch_documents(session, since, until, detailed=True,
-                           store_id=args.store, register_id=args.register)
+    docs = fetch_documents(
+        session, since, until, detailed=True,
+        store_id=args.store, register_id=args.register,
+    )
 
-    # Optionally filter by category
     target_cat_id = None
     if args.category:
-        needle = args.category.lower()
-        for c in cats:
-            if needle in c.get("title", "").lower():
-                target_cat_id = c["id"]
-                break
+        target_cat_id = resolve_category(cats, args.category)
         if target_cat_id is None:
             return {
                 "error": f"Category '{args.category}' not found.",
@@ -265,10 +267,14 @@ def cmd_compare(
     since_a, until_a = resolve_since_until(args.period_a)
     since_b, until_b = resolve_since_until(args.period_b)
 
-    docs_a = fetch_documents(session, since_a, until_a, detailed=False,
-                             store_id=args.store)
-    docs_b = fetch_documents(session, since_b, until_b, detailed=False,
-                             store_id=args.store)
+    docs_a = fetch_documents(
+        session, since_a, until_a, detailed=False,
+        store_id=args.store, register_id=args.register,
+    )
+    docs_b = fetch_documents(
+        session, since_b, until_b, detailed=False,
+        store_id=args.store, register_id=args.register,
+    )
 
     summary_a = _aggregate_summary(docs_a)
     summary_b = _aggregate_summary(docs_b)
@@ -291,8 +297,10 @@ def cmd_stats(
     session: requests.Session,
 ) -> dict[str, Any]:
     since, until = _resolve_dates(args)
-    docs = fetch_documents(session, since, until, detailed=True,
-                           store_id=args.store, register_id=args.register)
+    docs = fetch_documents(
+        session, since, until, detailed=True,
+        store_id=args.store, register_id=args.register,
+    )
     doc_count = len(docs)
     total_gross = sum(doc_gross(d) for d in docs)
     total_items = sum(

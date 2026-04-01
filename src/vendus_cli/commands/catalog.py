@@ -9,6 +9,7 @@ from vendus_cli.api import (
     fetch_categories,
     fetch_product_detail,
     fetch_products,
+    resolve_category,
 )
 
 
@@ -36,17 +37,11 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     p.set_defaults(func=cmd_by_category)
 
 
-def _resolve_category_id(
-    session: requests.Session,
-    name: str,
-) -> int | None:
-    """Resolve a category name to its ID."""
-    cats = fetch_categories(session)
-    needle = name.lower()
-    for c in cats:
-        if needle in c.get("title", "").lower():
-            return c["id"]
-    return None
+def _category_not_found(name: str, cats: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "error": f"Category '{name}' not found.",
+        "available": [c["title"] for c in cats],
+    }
 
 
 def cmd_list(
@@ -55,13 +50,10 @@ def cmd_list(
 ) -> dict[str, Any]:
     category_id = None
     if args.category:
-        category_id = _resolve_category_id(session, args.category)
+        cats = fetch_categories(session)
+        category_id = resolve_category(cats, args.category)
         if category_id is None:
-            cats = fetch_categories(session)
-            return {
-                "error": f"Category '{args.category}' not found.",
-                "available": [c["title"] for c in cats],
-            }
+            return _category_not_found(args.category, cats)
     products = fetch_products(session, category_id=category_id)
     return {"product_count": len(products), "products": products}
 
@@ -88,13 +80,10 @@ def cmd_by_category(
     args: argparse.Namespace,
     session: requests.Session,
 ) -> dict[str, Any]:
-    category_id = _resolve_category_id(session, args.name)
+    cats = fetch_categories(session)
+    category_id = resolve_category(cats, args.name)
     if category_id is None:
-        cats = fetch_categories(session)
-        return {
-            "error": f"Category '{args.name}' not found.",
-            "available": [c["title"] for c in cats],
-        }
+        return _category_not_found(args.name, cats)
     products = fetch_products(session, category_id=category_id)
     return {
         "category": args.name,
