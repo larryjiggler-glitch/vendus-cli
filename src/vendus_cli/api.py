@@ -249,12 +249,29 @@ def fetch_documents(
         return docs
 
     log.info("Fetching line items for %d documents...", len(docs))
-    detailed_docs: list[dict[str, Any]] = []
-    for doc in docs:
-        detail = fetch_document_detail(session, doc["id"])
-        if detail:
-            detailed_docs.append(detail)
-    return detailed_docs
+    doc_ids = [doc["id"] for doc in docs]
+    return _fetch_documents_parallel(session, doc_ids)
+
+
+def _fetch_documents_parallel(
+    session: requests.Session,
+    doc_ids: list[int],
+    max_workers: int = 10,
+) -> list[dict[str, Any]]:
+    """Fetch multiple documents in parallel using a thread pool."""
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    results: list[dict[str, Any]] = []
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = {
+            pool.submit(fetch_document_detail, session, doc_id): doc_id
+            for doc_id in doc_ids
+        }
+        for future in as_completed(futures):
+            detail = future.result()
+            if detail:
+                results.append(detail)
+    return results
 
 
 def fetch_stores(session: requests.Session) -> list[dict[str, Any]]:

@@ -13,6 +13,12 @@ Task-oriented CLI for Cegid Vendus POS operations.
 pip install vendus-cli   # or: uv pip install vendus-cli
 ```
 
+If running from the skill directory venv (OpenClaw/Manus):
+
+```bash
+VENDUS="$HOME/.openclaw/workspace/skills/vendus-cli/.venv/bin/vendus-pos"
+```
+
 Set credentials in environment or `.env` file:
 
 ```
